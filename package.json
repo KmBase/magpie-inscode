@@ -1,0 +1,49 @@
+{
+  "name": "magpie-inscode",
+  "version": "0.1.0",
+  "description": "InsCode for Magpie: CSDN InsCode free quota (deepseek-v4-flash, …) as a provider — browser OAuth sign-in (sid + device session complete), plain-Bearer requests to the api.taotoken.net/v1 gateway, and free-quota windows from the codingPlan buckets",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "internal.mjs",
+    "oauth.mjs",
+    "creds.mjs",
+    "models.mjs",
+    "quota.mjs",
+    "checkin.mjs",
+    "i18n.mjs",
+    "assets/",
+    "README.md",
+    "README.zh-CN.md",
+    "NOTICE.md",
+    "PUBLISH.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "opencode-provider",
+    "inscode",
+    "csdn",
+    "taotoken",
+    "deepseek",
+    "openai-compatible"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "magpie": {
+    "icon": "https://inscode.csdn.net/favicon.ico",
+    "maxConcurrency": 4
+  }
+}
