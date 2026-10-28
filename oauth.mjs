@@ -17,8 +17,9 @@
  *      `codingPlan`, `signKey`). Claiming is idempotent, so the InsCode desktop
  *      app may claim the same session without starving the plugin.
  *
- * Model requests then go to the console gateway (`https://api.taotoken.net/v1`)
- * with `Authorization: Bearer <api_key>` — no X-Tt signing.
+ * Model requests then go to the gateway (`https://taotoken.net/api/v1`) with
+ * `Authorization: Bearer <api_key>`; chat POSTs additionally carry the `X-Tt`
+ * client signature (see `sign.mjs`), `GET /models` is pure Bearer.
  *
  * @module magpie-inscode/oauth
  */
@@ -199,4 +200,72 @@ export async function pollSession(sid, {
 /** Small sleep helper (kept outside the loop so pauses are uniform). */
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * One session-complete request — the single-shot variant of `pollSession`.
+ *
+ * Claiming is idempotent (see the README), so an already-bound session answers
+ * `SUCCESS` with the same payload; this is how `auth.usage` refreshes the
+ * `codingPlan.buckets` snapshot after login. Unlike `pollSession` there is no
+ * loop: anything that is not an immediately usable `SUCCESS` payload throws,
+ * with `error.code` naming the reason (`UNAUTHORIZED` / `HTTP` / `NETWORK` /
+ * the raw status such as `WAITING` or `EXPIRED`).
+ *
+ * @param {string} sid
+ * @param {{bindBase?: string, bindPath?: string, deviceId?: string, method?: string,
+ *          fetchImpl?: Function}} opts
+ * @returns {Promise<ReturnType<typeof mapBindPayload>>}
+ */
+export async function fetchSession(sid, {
+  bindBase = DEFAULT_BIND_BASE,
+  bindPath = DEFAULT_BIND_PATH,
+  deviceId,
+  method = "POST",
+  fetchImpl,
+} = {}) {
+  const url = buildBindUrl({ bindBase, bindPath, sid, deviceId });
+  const headers = { accept: "application/json", "content-type": "application/json" };
+  if (deviceId) headers["x-tt-device-id"] = deviceId;
+  const fetchNow = fetchImpl ?? ((...args) => fetch(...args));
+
+  let res;
+  try {
+    res = await fetchNow(url, { method, headers });
+  } catch (error) {
+    const wrapped = new Error(error && error.message ? error.message : String(error));
+    wrapped.code = "NETWORK";
+    throw wrapped;
+  }
+  // 401/403 means the endpoint moved or the device header was rejected.
+  if (res.status === 401 || res.status === 403) {
+    const error = new Error(`session complete unauthorized: HTTP ${res.status}`);
+    error.code = "UNAUTHORIZED";
+    throw error;
+  }
+  if (!res.ok) {
+    const error = new Error(`session complete: HTTP ${res.status}`);
+    error.code = "HTTP";
+    throw error;
+  }
+  let json;
+  try {
+    json = await res.json();
+  } catch {
+    json = {};
+  }
+  const data = json?.data && typeof json.data === "object" ? json.data : json;
+  const status = typeof data?.status === "string" ? data.status.toUpperCase() : "";
+  if (status !== "SUCCESS") {
+    const error = new Error(`session not ready: ${status || "no status"}`);
+    error.code = status || "WAITING";
+    throw error;
+  }
+  const mapped = mapBindPayload(json);
+  if (!mapped?.apiKey) {
+    const error = new Error("session complete reported SUCCESS without an apiKey");
+    error.code = "NO_KEY";
+    throw error;
+  }
+  return mapped;
 }

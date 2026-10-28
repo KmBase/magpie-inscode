@@ -8,15 +8,18 @@
  * `POST https://api.taotoken.net/v1/codex/session/<sid>/complete?deviceId=…`
  * (no auth, `X-Tt-Device-Id` header) until `data.status === "SUCCESS"`, then
  * takes `data.apiKey` plus `username`, `nickname` and the `codingPlan` (models +
- * usage buckets). Requests then go to the console gateway
- * `https://api.taotoken.net/v1` with plain `Authorization: Bearer <api_key>`.
+ * usage buckets). Requests then go to the gateway `https://taotoken.net/api/v1`:
+ * `Authorization: Bearer <api_key>`, with chat POSTs additionally signed via the
+ * account's `X-Tt` client signature (`sign.mjs`; `GET /models` is pure Bearer).
  *
  * A "本机凭据" fallback method reads the InsCode client's local files for
  * machines where it has already signed in.
  *
  * Magpie-specific hooks (ignored by OpenCode): `auth.usage` (from the
- * `codingPlan.buckets`) and `auth.checkin` (daily top-up, opt-in via
- * `INCODE2API_CHECKIN_URL`).
+ * `codingPlan.buckets`, re-polled from the idempotent session-complete
+ * endpoint when the stored `sid` allows it, falling back to the login
+ * snapshot and then the local InsCode credentials) and `auth.checkin`
+ * (daily top-up, opt-in via `INCODE2API_CHECKIN_URL`).
  *
  * @module magpie-inscode
  */
@@ -24,11 +27,12 @@
 import { PROVIDER, ICON, DEFAULT_API_BASE, readAuth, credentialsOf, accountKey, fellBack } from "./internal.mjs";
 import {
   DEFAULT_OAUTH_URL, DEFAULT_BIND_BASE, DEFAULT_BIND_PATH,
-  newSid, newDeviceId, buildAuthorizeUrl, pollSession,
+  newSid, newDeviceId, buildAuthorizeUrl, pollSession, fetchSession,
 } from "./oauth.mjs";
 import { loadFreeAccount, accountName } from "./creds.mjs";
 import { usageFromCreds, usageFromBind } from "./quota.mjs";
 import { createCheckin } from "./checkin.mjs";
+import { buildSignHeaders } from "./sign.mjs";
 import { NPM, seedModels, normalizeRow, toProviderModel, createCatalog, DEFAULT_OUTPUT } from "./models.mjs";
 import { strings, resolveLocale, fill } from "./i18n.mjs";
 
@@ -54,6 +58,8 @@ export async function InsCodeAuthPlugin({ client } = {}, options = {}) {
     modelsTtlMs: Number(options.modelsTtlMs) > 0 ? Number(options.modelsTtlMs) : 10 * 60_000,
     quotaTtlMs: Number(options.quotaTtlMs) > 0 ? Number(options.quotaTtlMs) : 60_000,
     maxOutputTokens: Number(options.maxOutputTokens) > 0 ? Number(options.maxOutputTokens) : DEFAULT_OUTPUT,
+    // Test hook: lets unit tests stub the session-complete refresh.
+    fetchImpl: typeof options.fetchImpl === "function" ? options.fetchImpl : undefined,
   };
 
   const log = (level, message) => {
@@ -77,6 +83,36 @@ export async function InsCodeAuthPlugin({ client } = {}, options = {}) {
 
   /** Cache quota per account so a polled usage hook stays cheap. */
   const quotaCache = new Map();
+
+  /** Keep the bind/plan name when the local free-quota snapshot lacks one. */
+  const withPlan = (free, plan) => {
+    const f = free && typeof free === "object" ? { ...free } : {};
+    if (!f.plan_name && !f.plan && plan) f.plan_name = plan;
+    return f;
+  };
+
+  /**
+   * Re-poll the idempotent session-complete endpoint for a fresh
+   * `codingPlan` — the login snapshot goes stale (a 5-hour bucket may only
+   * appear once the window has usage). Returns null when there is no sid to
+   * refresh with, or when the refresh fails; the caller then keeps the
+   * snapshot. Throttled by the `quotaTtlMs` cache around the `usage` hook.
+   */
+  const refreshBind = async (meta) => {
+    if (!meta.sid) return null;
+    try {
+      return await fetchSession(meta.sid, {
+        bindBase: opts.bindBase,
+        bindPath: opts.bindPath,
+        deviceId: meta.deviceId,
+        method: opts.pollMethod,
+        ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+      });
+    } catch (error) {
+      log("warn", `${PROVIDER}: usage refresh: ${error.message}`);
+      return null;
+    }
+  };
 
   /** The bearer key one account needs, out of its auth record. */
   const keyOf = (auth) => {
@@ -166,6 +202,9 @@ export async function InsCodeAuthPlugin({ client } = {}, options = {}) {
                   });
                   const meta = {
                     apiBase: opts.apiBase,
+                    // Kept so `auth.usage` can re-poll the (idempotent)
+                    // complete endpoint and refresh the quota buckets.
+                    ...(m.sid ? { sid: m.sid } : {}),
                     username: m.username,
                     ...(m.nickname ? { nickname: m.nickname } : {}),
                     ...(m.avatar ? { avatar: m.avatar } : {}),
@@ -222,16 +261,30 @@ export async function InsCodeAuthPlugin({ client } = {}, options = {}) {
               key: c.key,
               ...(accountName(c.account) ? { accountId: accountName(c.account) } : {}),
               ...(c.account?.email ? { email: c.account.email } : {}),
-              metadata: { configDir: c.configDir, free: c.free },
+              metadata: { configDir: c.configDir, free: c.free, ...(c.deviceId ? { deviceId: c.deviceId } : {}) },
             };
           },
         },
       ],
 
-      /** Per-account request loader: baseURL + a pure-Bearer fetch. */
+      /**
+       * Per-account request loader: baseURL + a Bearer fetch that signs chat
+       * POSTs with the account's `X-Tt` client signature (GETs are pure
+       * Bearer — the gateway only checks the signature on POSTs).
+       */
       async loader(getAuth) {
-        const key = keyOf(await readAuth(getAuth));
-        if (!key) return {};
+        const c = credentialsOf(await readAuth(getAuth));
+        if (!c?.key) return {};
+        const key = c.key;
+        // Local-credential accounts re-read the (rotatable) sign key from disk
+        // per request, so a fresh `taotoken.json` is picked up without re-login.
+        let { keyId, signKeyB64, deviceId } = c;
+        if ((!keyId || !signKeyB64) && c.configDir) {
+          const local = loadFreeAccount(c.configDir);
+          keyId = keyId || local.keyId;
+          signKeyB64 = signKeyB64 || local.signKeyB64;
+          deviceId = deviceId || local.deviceId;
+        }
         return {
           baseURL: opts.apiBase,
           async fetch(input, init) {
@@ -239,12 +292,29 @@ export async function InsCodeAuthPlugin({ client } = {}, options = {}) {
             headers.set("authorization", `Bearer ${key}`);
             headers.set("content-type", "application/json");
             headers.set("user-agent", "magpie-inscode/0.1");
+            const method = String(init?.method ?? input?.method ?? "GET").toUpperCase();
+            if (method === "POST") {
+              const url = new URL(
+                typeof input === "string" || input instanceof URL ? input : input?.url ?? "",
+                opts.apiBase,
+              );
+              for (const [name, value] of Object.entries(buildSignHeaders({
+                keyId,
+                signKeyB64,
+                deviceId,
+                method,
+                path: url.pathname,
+                body: init?.body,
+              }))) {
+                headers.set(name, value);
+              }
+            }
             return fetch(input, { ...init, headers });
           },
         };
       },
 
-      /** Free-quota windows from the bind buckets (or local creds), cached. */
+      /** Free-quota windows: bind buckets refreshed via the complete endpoint, else the local creds; cached. */
       async usage(getAuth) {
         const raw = await readAuth(getAuth);
         const user = userLabel(raw);
@@ -261,16 +331,27 @@ export async function InsCodeAuthPlugin({ client } = {}, options = {}) {
         const hit = quotaCache.get(cacheKey);
         if (hit && Date.now() - hit.at < opts.quotaTtlMs) return hit.value;
         try {
+          const fresh = await refreshBind(meta);
+          const m = fresh
+            ? {
+                ...meta,
+                plan: fresh.plan || meta.plan,
+                ...(Array.isArray(fresh.buckets) && fresh.buckets.length ? { buckets: fresh.buckets } : {}),
+                ...(fresh.periodEnd ? { periodEnd: fresh.periodEnd } : {}),
+                ...(fresh.username ? { username: fresh.username } : {}),
+              }
+            : meta;
           let value;
-          if (Array.isArray(meta.buckets) && meta.buckets.length) {
-            value = usageFromBind(meta, { t, user: user || meta.username });
+          if (Array.isArray(m.buckets) && m.buckets.length) {
+            value = usageFromBind(m, { t, user: user || m.username || meta.username });
           } else if (meta.free && typeof meta.free === "object") {
-            value = usageFromCreds({ free: meta.free }, { t, user: user || meta.email });
-          } else if (meta.configDir) {
-            const local = loadFreeAccount(meta.configDir);
-            value = usageFromCreds({ free: local.free }, { t, user: user || meta.email });
+            value = usageFromCreds({ free: withPlan(meta.free, meta.plan) }, { t, user: user || meta.username || meta.email });
           } else {
-            value = { plan: meta.plan || t.planFallback, ...(user ? { user } : {}), windows: [] };
+            // OAuth logins keep no `free` snapshot: fall back to the InsCode
+            // client's local taotoken.json (explicit dir for local logins,
+            // the default dir otherwise) so its 5-hour window still shows.
+            const local = loadFreeAccount(meta.configDir);
+            value = usageFromCreds({ free: withPlan(local.free, meta.plan) }, { t, user: user || meta.username || meta.email });
           }
           quotaCache.set(cacheKey, { at: Date.now(), value });
           return value;
@@ -303,6 +384,7 @@ export const _internal = Object.freeze({
   newDeviceId,
   buildAuthorizeUrl,
   pollSession,
+  fetchSession,
   mapBindPayload: null, // placeholder kept out of the tight API; use oauth directly
   usageFromCreds,
   usageFromBind,

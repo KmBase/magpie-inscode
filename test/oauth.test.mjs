@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  newSid, newDeviceId, buildAuthorizeUrl, buildBindUrl, mapBindPayload, pollSession,
+  newSid, newDeviceId, buildAuthorizeUrl, buildBindUrl, mapBindPayload, pollSession, fetchSession,
   DEFAULT_OAUTH_URL, DEFAULT_BIND_BASE, DEFAULT_BIND_PATH,
 } from "../oauth.mjs";
 
@@ -138,4 +138,38 @@ test("pollSession：网络异常继续轮询，最终超时", async () => {
     throw new Error("ECONNRESET");
   };
   await assert.rejects(() => pollSession("s", { intervalMs: 20, timeoutMs: 80, fetchImpl }), /timed out/);
+});
+
+test("fetchSession：SUCCESS → 单次返回凭据，POST 到 complete 并带设备头", async () => {
+  const { fetchImpl, calls } = stubFetch(() => ({ status: 200, body: ENVELOPE }));
+  const m = await fetchSession("sid-f", { deviceId: "dev-f", fetchImpl });
+  assert.equal(m.apiKey, "sk-zzzz");
+  assert.equal(m.plan, "Coding Plan Free");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, "POST");
+  assert.match(calls[0].url, /\/v1\/codex\/session\/sid-f\/complete\?deviceId=dev-f$/);
+  assert.equal(calls[0].headers["x-tt-device-id"], "dev-f");
+});
+
+test("fetchSession：WAITING → 抛错且只请求一次（不轮询）", async () => {
+  const { fetchImpl, calls } = stubFetch(() => ({ status: 200, body: { code: 200, data: { status: "WAITING" } } }));
+  await assert.rejects(() => fetchSession("s", { fetchImpl }), (error) => error.code === "WAITING");
+  assert.equal(calls.length, 1);
+});
+
+test("fetchSession：HTTP 401 → UNAUTHORIZED；HTTP 500 → HTTP", async () => {
+  const a = stubFetch(() => ({ status: 401, body: {} }));
+  await assert.rejects(() => fetchSession("s", { fetchImpl: a.fetchImpl }), (error) =>
+    error.code === "UNAUTHORIZED");
+  const b = stubFetch(() => ({ status: 500, body: {} }));
+  await assert.rejects(() => fetchSession("s", { fetchImpl: b.fetchImpl }), (error) =>
+    error.code === "HTTP" && /HTTP 500/.test(error.message));
+});
+
+test("fetchSession：网络异常 → NETWORK", async () => {
+  const fetchImpl = async () => {
+    throw new Error("ECONNRESET");
+  };
+  await assert.rejects(() => fetchSession("s", { fetchImpl }), (error) =>
+    error.code === "NETWORK" && error.message === "ECONNRESET");
 });

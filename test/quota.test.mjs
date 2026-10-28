@@ -22,7 +22,7 @@ test("free 带 used/limit → 一个 5h 窗口", () => {
   assert.equal(r.windows[0].used, 50); // 100/200 → 50%
   assert.equal(r.windows[0].limit, 200);
   assert.equal(r.windows[0].span, 5 * 3600);
-  assert.equal(r.windows[0].name, "5 小时额度");
+  assert.equal(r.windows[0].name, "5 小时");
   assert.equal(r.windows[0].display, "100 / 200 次");
 });
 
@@ -40,14 +40,14 @@ test("free 无 used/limit → 从 model_meta 找窗口", () => {
 
 test("无 t 时降级为英文硬编码名", () => {
   const r = usageFromCreds({ free: { used: 1, limit: 2 } }, {});
-  assert.equal(r.windows[0].name, "5h window");
+  assert.equal(r.windows[0].name, "5h");
 });
 
 test("plan 缺省用 t.planFallback", () => {
   const r = usageFromCreds({ free: {} }, { t });
   assert.equal(r.plan, "InsCode 免费套餐");
 });
-test("usageFromBind：5h/7d/30d 桶 → 窗口", () => {
+test("usageFromBind：只保留 5 小时桶，周/月桶丢弃", () => {
   const r = usageFromBind({
     plan: "Coding Plan Free",
     planTier: "codex_free",
@@ -61,18 +61,16 @@ test("usageFromBind：5h/7d/30d 桶 → 窗口", () => {
   assert.equal(r.plan, "Coding Plan Free");
   assert.equal(r.user, "u1");
   assert.equal(r.until, "2027-08-03 16:30:05");
-  assert.equal(r.windows.length, 3);
-  assert.equal(r.windows[0].name, "5 小时窗口");
+  assert.equal(r.windows.length, 1);
+  assert.equal(r.windows[0].name, "5 小时");
   assert.equal(r.windows[0].used, 43.33);
   assert.equal(r.windows[0].span, 5 * 3600);
   assert.equal(r.windows[0].resetsAt, "2026-10-29 03:30:05");
-  assert.equal(r.windows[1].span, 7 * 24 * 3600);
-  assert.equal(r.windows[2].span, 30 * 24 * 3600);
 });
 
-test("usageFromBind：未知桶名 → generic 名称；无桶 → 空窗口", () => {
-  const generic = usageFromBind({ buckets: [{ quotaCode: "x_weird", usagePercent: 10 }] }, { t });
-  assert.equal(generic.windows[0].name, "x_weird 窗口");
+test("usageFromBind：非 5 小时桶（含未知桶名）→ 空窗口；无桶 → 空窗口", () => {
+  const weird = usageFromBind({ buckets: [{ quotaCode: "x_weird", usagePercent: 10 }] }, { t });
+  assert.deepEqual(weird.windows, []);
   const empty = usageFromBind({ plan: "P" }, { t });
   assert.deepEqual(empty.windows, []);
 });

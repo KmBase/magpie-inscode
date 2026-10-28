@@ -56,7 +56,7 @@ export function usageFromCreds(c, { t, user } = {}) {
       });
     } else {
       windows.push({
-        name: `${DEFAULT_WINDOW_HOURS}h window`,
+        name: `${DEFAULT_WINDOW_HOURS}h`,
         used: (w.used / w.limit) * 100,
         span: DEFAULT_WINDOW_SECONDS,
         amount: w.used,
@@ -84,41 +84,36 @@ export function usageFromCreds(c, { t, user } = {}) {
   };
 }
 
-/** Map a `codingPlan.quotaCode` to its rolling-window label key and length. */
-const BUCKET_LABELS = { "5_hour": "bucketFiveHour", "1_week": "bucketWeek", "1_month": "bucketMonth" };
-const BUCKET_HOURS = { "5_hour": 5, "1_week": 168, "1_month": 720 };
+/** The only bucket reported: the 5-hour rolling window (`quotaCode`). */
+const FIVE_HOUR_CODE = "5_hour";
+const FIVE_HOUR_HOURS = 5;
 
 /**
  * The `auth.usage` payload for an account signed in via OAuth: map the
- * `codingPlan.buckets` (5-hour / 7-day / 30-day windows with `usagePercent`)
- * onto Magpie quota windows.
+ * `codingPlan` 5-hour bucket (with `usagePercent`) onto a Magpie quota window.
  *
- * `used` may legitimately exceed 100 — Magpie renders that. `until` is the
- * plan period end.
+ * Only the 5-hour window is reported — it is the one that gates day-to-day
+ * usage, and a single row keeps magpie's quota line short. The week/month
+ * buckets reset on the plan period at a fixed time and are dropped.
+ *
+ * `used` may legitimately exceed 100 — Magpie renders that. `resetsAt` is the
+ * moment the 5-hour window starts again.
  *
  * @param {{plan?: string, planTier?: string, buckets?: object[], periodEnd?: string}} meta
  * @param {{t?: object, user?: string}} [ctx]
  */
 export function usageFromBind(meta = {}, { t, user } = {}) {
-  const buckets = Array.isArray(meta.buckets) ? meta.buckets : [];
-  const windows = buckets
-    .map((b) => {
-      if (!b || typeof b !== "object") return null;
-      const code = String(b.quotaCode || "");
-      const hours = BUCKET_HOURS[code];
-      const labelKey = BUCKET_LABELS[code];
-      const name = t?.[labelKey]
-        ? t[labelKey]
-        : fill(t?.bucketGeneric || "{code} window", { code });
-      const used = num(b.usagePercent);
-      return {
-        name,
-        ...(used !== undefined ? { used } : {}),
-        ...(hours ? { span: hours * 3600 } : {}),
-        ...(typeof b.endTime === "string" && b.endTime ? { resetsAt: b.endTime } : {}),
-      };
-    })
-    .filter(Boolean);
+  const buckets = (Array.isArray(meta.buckets) ? meta.buckets : [])
+    .filter((b) => b && typeof b === "object" && String(b.quotaCode || "") === FIVE_HOUR_CODE);
+  const windows = buckets.map((b) => {
+    const used = num(b.usagePercent);
+    return {
+      name: t?.bucketFiveHour || fill(t?.bucketGeneric || "{code} window", { code: FIVE_HOUR_CODE }),
+      ...(used !== undefined ? { used } : {}),
+      span: FIVE_HOUR_HOURS * 3600,
+      ...(typeof b.endTime === "string" && b.endTime ? { resetsAt: b.endTime } : {}),
+    };
+  });
 
   return {
     plan: meta.plan || meta.planTier || t?.planFallback || "",

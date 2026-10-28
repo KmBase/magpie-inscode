@@ -31,11 +31,9 @@ const ZH = {
 
   usageFailed: "读取额度失败：{detail}",
 
-  windowHours: "{hours} 小时额度",
+  windowHours: "{hours} 小时",
   callsOf: "{used} / {total} 次",
-  bucketFiveHour: "5 小时窗口",
-  bucketWeek: "7 天窗口",
-  bucketMonth: "30 天窗口",
+  bucketFiveHour: "5 小时",
   bucketGeneric: "{code} 窗口",
 
   modelsUnavailable: "模型目录暂时不可用，沿用内置列表",
@@ -66,11 +64,9 @@ const EN = {
 
   usageFailed: "Reading the quota failed: {detail}",
 
-  windowHours: "{hours}h window",
+  windowHours: "{hours}h",
   callsOf: "{used} / {total} calls",
-  bucketFiveHour: "5h window",
-  bucketWeek: "7d window",
-  bucketMonth: "30d window",
+  bucketFiveHour: "5h",
   bucketGeneric: "{code} window",
 
   modelsUnavailable: "The model catalog is unavailable; keeping the built-in list",

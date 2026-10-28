@@ -2,13 +2,14 @@
 
 本插件的实现依据（只参考事实与算法，不复制代码）：
 
-- **[inscode2api](https://github.com/…/inscode2api)** — 与 taotoken 交互的确凿事实来源。
+- **[inscode2api](https://github.com/HPPC114514/inscode2api)** — 与 taotoken 交互的确凿事实来源。
   `config.py` 记录了本机凭据文件（`taotoken.json` / `device.json` / `auth.json`）的字段结构；
   `signer.py` 记录了 `X-Tt` 客户端签名算法（作者对 InsCode 客户端静态逆向 + 二进制补丁
-  抓包反推、并在真实上游验证通过）。本插件部分移植了其账号/端点事实，但**当前不再使用
-  X-Tt 签名**——登录改为浏览器 OAuth（`taotoken.net/oauth?sid=<uuid>`，随后按 sid 轮询
-  `api.taotoken.net/v1/codex/session/<sid>/complete?deviceId=…` 领取凭据），模型请求改走
-  控制台 API Key 网关 `api.taotoken.net/v1`，纯 Bearer。
+  抓包反推、并在真实上游验证通过）。本插件部分移植了其账号/端点事实：登录用浏览器
+  OAuth（`taotoken.net/oauth?sid=<uuid>`，随后按 sid 轮询
+  `api.taotoken.net/v1/codex/session/<sid>/complete?deviceId=…` 领取凭据）；模型/聊天
+  请求走网关，其中聊天 POST 带 `X-Tt` 客户端签名（`sign.mjs`，算法与其 `signer.py`
+  一致），`GET /models` 纯 Bearer。
 - **[magpie-atomcode](https://github.com/…/magpie-atomcode) / magpie-sensenova** — MIT,
   aqiu817。同作者的 magpie 插件工程范式（单函数入口、i18n 表、`_internal` 测试出口、
   quota/模型缓存策略、NOTICE 约定）参考对象。

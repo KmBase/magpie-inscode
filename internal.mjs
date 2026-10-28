@@ -13,12 +13,16 @@ import { readFileSync } from "node:fs";
 export const PROVIDER = "inscode";
 
 /**
- * The console API-key gateway base used for model requests (pure Bearer; the
- * X-Tt client signature is not used). `loader.baseURL` and per-model
- * `api.url` default to it; magpie appends `/chat/completions`
- * (OpenAI-compatible) → `https://api.taotoken.net/v1/chat/completions`.
+ * The gateway base used for model + chat requests. Chat POSTs additionally
+ * carry the `X-Tt` client signature (see `sign.mjs`); `GET /models` is pure
+ * Bearer. `https://taotoken.net/api/v1` is the host+path combination the
+ * InsCode client itself uses and the one the signature algorithm was verified
+ * against; `api.taotoken.net/v1` also serves the models list but rejects
+ * signed-less chat POSTs with `401 invalid_client_signature`. `loader.baseURL`
+ * and per-model `api.url` default to it; magpie appends `/chat/completions`
+ * (OpenAI-compatible).
  */
-export const DEFAULT_API_BASE = "https://api.taotoken.net/v1";
+export const DEFAULT_API_BASE = "https://taotoken.net/api/v1";
 
 /** Inlined so the provider stays identifiable with no network. */
 export const ICON = readIcon();
@@ -47,22 +51,32 @@ export async function readAuth(getAuth) {
  * The fields a signed request needs, out of a stored auth record.
  *
  * InsCode logs in with a local API key whose companions (sign keys, device id)
- * ride on `metadata`; a record without a key cannot sign at all.
+ * ride on `metadata`; a record without a key cannot sign at all. The sign key
+ * may be stored three ways — flat (`keyId`/`signKeyB64`), the OAuth session
+ * payload (`signKey: { keyId, signKey }`), or the local client snapshot
+ * (`free.sign_key: { key_id, sign_key }`) — so all three are accepted here.
  */
 export function credentialsOf(auth) {
   if (!auth || typeof auth !== "object") return undefined;
   const key = typeof auth.key === "string" && auth.key ? auth.key : undefined;
   if (!key) return undefined;
   const metadata = auth.metadata && typeof auth.metadata === "object" ? auth.metadata : {};
+  const sk = metadata.signKey && typeof metadata.signKey === "object" ? metadata.signKey : {};
+  const freeKey = metadata.free?.sign_key && typeof metadata.free.sign_key === "object" ? metadata.free.sign_key : {};
   return {
     type: auth.type,
     key,
     configDir: typeof metadata.configDir === "string" ? metadata.configDir : undefined,
-    keyId: typeof metadata.keyId === "string" ? metadata.keyId : undefined,
-    signKeyB64: typeof metadata.signKeyB64 === "string" ? metadata.signKeyB64 : undefined,
+    keyId: str(metadata.keyId) || str(sk.keyId) || str(freeKey.key_id),
+    signKeyB64: str(metadata.signKeyB64) || str(sk.signKey) || str(freeKey.sign_key),
     deviceId: typeof metadata.deviceId === "string" ? metadata.deviceId : undefined,
     accountId: typeof auth.accountId === "string" ? auth.accountId : undefined,
   };
+}
+
+/** First non-empty trimmed string, else undefined. */
+function str(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 /** Stable cache key for one account. */
